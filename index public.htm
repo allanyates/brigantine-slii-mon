@@ -1,0 +1,1207 @@
+<head>
+<title>St. Lawrence II Telemetry</title>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="https://ajax.googleapis.com/ajax/libs/jqueryui/1.12.1/themes/smoothness/jquery-ui.css">
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.12.1/jquery-ui.min.js"></script>
+<script src="https://cdn.rawgit.com/Mikhus/canvas-gauges/gh-pages/download/2.1.7/radial/gauge.min.js"></script>
+<script defer src="https://maps.googleapis.com/maps/api/js?key=keykeykey&callback=initMap"></script>
+
+<style>
+  h2 { margin-bottom: 0; }
+  #shipmap {
+    width:            100%;
+    height:           400px;
+    background-color: grey;
+  }
+  #powered {
+    font-size: small;
+  }
+  #powered a:link, #powered a:visited, h1 a:link, h1 a:visited {
+    text-decoration: none;
+    color:black;
+  }
+  #header {
+    width:  100%;
+    height: 120px;
+    border: 1px;
+  }
+  #title {
+    float: left;
+  }
+  #logo {
+    float: right;
+  }
+  #temperature {
+    margin-bottom: 20px;
+    border-radius: 15px;
+	    border: 2px solid black;
+	    display: inline-block;
+    float: none;
+  }
+  #dcelectrical {
+    border-radius: 15px;
+    border: 2px solid black;
+    display: inline-block;
+    float: none;
+  }
+  #acelectrical {
+    border-radius: 15px;
+    border: 2px solid black;
+    display: inline-block;
+    float: none;
+  }
+  #engine {
+    border-radius: 15px;
+    border: 2px solid black;
+    display: inline-block;
+    float: none;
+  }
+  #generator {
+    border-radius: 15px;
+    border: 2px solid black;
+    display: inline-block;
+    float: none;
+  }
+  #velocity {
+  border-radius: 15px;
+    border: 2px solid black;
+    display: inline-block;
+  }
+  canvas {
+    display: inline;
+  }
+</style>
+
+<script>
+
+const idAccessToken          = keykeykey;
+const idUser                 = 'keykeykey';
+const token                  = 'keykeykey';
+const idSite                 = 12834;
+const VRM_UPD_INT            = 30000; // 30 seconds
+const SP_UPD_INT             = 30000; // 30 seconds
+const GPS_ERROR              = 63;    // meters
+const SPEED_ERROR            = 0.5;   // knots
+const SPEED_BASE             = 1;     // knots
+const SPEED_COUNT_MAX        = 10;
+const google_api             = 'keykeykey';
+const metersPerSecondToKnots = 1.944;
+const STALE_TIME             = 300;  // 300s or 5 minutes
+const GAUGE_SIZE_MAJOR       = 275;
+const GAUGE_SIZE_MINOR       = 275;
+const LOCATION_POH           = { lat: 44.218723, lng: -76.515766 };
+const MAP_ICON               = 'http://yates.ca/brigantine/icon9.png';
+const SP_USERNAME            = 'keykeykey';
+const SP_PASSWORD            = 'keykeykey';
+const SP_LOGIN_UPD_INT       = 86000000;
+const TRACK_HIST_DEF         = 1;
+const ZOOM_DEFAULT           = 16;
+
+const URL_VRM_INSTALL = 'https://vrmapi.victronenergy.com/v2/users/' + idUser + '/installations?extended=1';
+const URL_VRM_TRACK   = 'https://vrmapi.victronenergy.com/v2/installations/' + idSite + '/gps-download?';
+const URL_SP_LOGIN    = 'https://rest.sensaphone.net/api/v1/login/{' + SP_USERNAME + '}/{' + SP_PASSWORD + '}';
+
+var gauge_soc;
+var gauge_bv;
+var gauge_bc;
+var gauge_ebv;
+var gauge_ebi;
+var gauge_hc;
+var gauge_genv;
+var gauge_engv;
+var gauge_geni;
+var gauge_engi;
+var gauge_spliti;
+var gauge_ha;
+var gauge_tpex;
+var gauge_aci;
+var gauge_acv;
+var map;
+var shipLocation;
+var shipTrack;
+var noTrack      = true;
+var curr_lat     = 0;
+var curr_lng     = 0;
+var systemZoomed = false;
+var userZoomed   = false;
+var shipMoving   = false;
+var speedCount   = 0;
+var spSession;
+var spAccount;
+var gaugeSpTpEx;
+var gaugeSpTpTm;
+var gaugeSpTpEr;
+var gaugeSpTpSt;
+var speedFilled = false;
+var trackHist   = TRACK_HIST_DEF;
+var shipOnlineVictron    = false;
+var shipOnlineSensaphone = false;
+var tempCanvas  = document.createElement("canvas");
+
+$(document).ready(function(){
+
+$(".daysHistClass").val(TRACK_HIST_DEF);
+  create_gauge_bv();
+  create_gauge_alti();
+  create_gauge_soc();
+  create_gauge_bc();
+  create_gauge_hc();
+  //create_gauge_ha();
+  create_gauge_sp();
+  create_gauge_aci();
+  create_gauge_acv();
+  create_gauge_ebi();
+  gaugeCreateTpEx();
+  gaugeCreateTpTm();
+  gaugeCreateTpEr();
+  gaugeCreateTpSt();
+  vrmInstall();
+  vrmTrack();
+  spLogin();
+});
+
+function changeTrackHist(val) {
+  console.log('changeTrackHist: Enter');
+  document.getElementById('mapState').innerHTML = 'Processing...';
+  trackHist = val;
+  console.log('New trackHist: '+val);
+  if (shipTrack !== undefined) {
+    shipTrack.setMap(null);
+  }
+  vrmTrack();
+  //console.log('changeTrackHist: Exit');
+}
+
+function vrmInstall() {
+  console.log('vrmInstall: Enter');
+  $.ajax({
+      url: URL_VRM_INSTALL,
+      beforeSend: function(xhr){xhr.setRequestHeader('Origin','http://yates.ca');},
+      beforeSend: function(xhr){xhr.setRequestHeader('X-Authorization','Token '+token);},
+      type: 'GET',
+
+    success: function(data) {
+      parseInstall(data);
+    },
+
+    fail: function(xhr, textStatus, error) {
+      console.log('Failed to get VRM install');
+      console.log(xhr.statusText);
+	  console.log(textStatus);
+      console.log(error);
+    }});
+
+  setTimeout(vrmInstall,VRM_UPD_INT)
+}
+
+function vrmTrack() {
+  console.log('vrmTrack: Enter');
+  console.log('Track history days: ' + trackHist);
+
+  var end = Math.trunc(Date.now() / 1000);  // Time in seconds
+  var start = end - (trackHist * 24 * 60 * 60);
+
+  var url = URL_VRM_TRACK + 'end=' + end + '&start=' + start;
+
+  $.ajax({
+      url: url,
+      beforeSend: function(xhr){xhr.setRequestHeader('X-Authorization','Token '+token);},
+      type: 'GET',
+
+    success: function(data) {
+      parseTrack(data);
+    },
+
+    fail: function(xhr, textStatus, error) {
+      console.log('Failed to get VRM track');
+      console.log(xhr.statusText);
+	  console.log(textStatus);
+      console.log(error);
+    }});
+
+    setTimeout(vrmTrack,VRM_UPD_INT)
+}
+
+function parseTrack (data) {
+  console.log('parseTrack: Enter');
+  var pair;
+  var track
+  var LatLong;
+  var shipCoordinates = [];
+  var bounds = new google.maps.LatLngBounds();
+
+
+  track = data.getElementsByTagName("coordinates")[0].childNodes[0].nodeValue;
+        //console.log(track);
+  points = track.split(" ");
+
+  for (pair of points) {
+     LatLong = pair.split(",");
+     if (shipCoordinates.length === 0) {
+       shipCoordinates.push({
+	     lat: parseFloat(LatLong[1]),
+	     lng: parseFloat(LatLong[0])
+  	   });
+  	   lat_curr = LatLong[1];
+  	   lng_curr = LatLong[0];
+  	   continue;
+  	 }
+  	 var distance = getDistanceFromLatLonInM(LatLong[1],LatLong[0],lat_curr,lng_curr);
+  	 //console.log(LatLong[1],LatLong[0],lat_curr,lng_curr);
+
+     if (distance > GPS_ERROR) {
+   	   console.log('Distance: ' + distance);
+   	   shipCoordinates.push({
+  	     lat: parseFloat(LatLong[1]),
+  	     lng: parseFloat(LatLong[0])
+  	   });
+  	   lat_curr = LatLong[1];
+  	   lng_curr = LatLong[0];
+  	 }
+
+  }
+
+  //console.log('shipCoordinatesLength: '+shipCoordinates.length);
+
+  if (shipCoordinates.length !== 1) {
+
+    for (var i = 0; i < shipCoordinates.length; i++) {
+      bounds.extend(shipCoordinates[i]);
+    }
+    //console.log('userZoomed: '+userZoomed);
+    //console.log('systemZoomed: '+systemZoomed);
+    if (!userZoomed) {
+      systemZoomed = true;
+      map.fitBounds(bounds);
+      //console.log('Fit bounds to shipCoordinates');
+    }
+
+    if (shipTrack !== undefined) {
+       shipTrack.setMap(null);
+    }
+
+    shipTrack = new google.maps.Polyline({
+        path: shipCoordinates,
+        geodesic: true,
+        strokeColor: '#FF0000',
+        strokeOpacity: 1.0,
+        strokeWeight: 2
+    });
+
+    shipTrack.setMap(map);
+    noTrack = false;
+
+  }
+  else {
+    map.panTo(shipLocation.getPosition());
+    systemZoomed = true;
+    map.setZoom(ZOOM_DEFAULT);
+  }
+
+  document.getElementById('mapState').innerHTML = '';
+  //console.log('parseTrack: Exit');
+
+}
+
+function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
+  var R = 6371; // Radius of the earth in km
+  var dLat = deg2rad(lat2-lat1);  // deg2rad below
+  var dLon = deg2rad(lon2-lon1);
+  var a =
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon/2) * Math.sin(dLon/2)
+    ;
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  var d = R * c * 1000; // Distance in m
+  return d;
+}
+
+function deg2rad(deg) {
+  return deg * (Math.PI/180)
+}
+
+function spLogin() {
+  $.post( URL_SP_LOGIN )
+
+    .done(function( data ) {
+      //console.log('Sensaphone Login')
+      //console.log(data);
+      spSession = data.response.session;
+      spAccount = data.response.acctid;
+      spZone();
+      setTimeout(spLogin, SP_LOGIN_UPD_INT)
+    })
+
+    .fail(function(xhr, textStatus, error) {
+      console.log('Failed to execute Sensaphone login');
+      console.log(xhr.statusText);
+	  console.log(textStatus);
+      console.log(error);
+    });
+  //console.log('parseTrack: Exit');
+}
+
+function spZone() {
+  // GET https://rest.sensaphone.net/api/v1/{ACCTID}/{SESSIONID}/device
+  var url = 'https://rest.sensaphone.net/api/v1/{' + spAccount + '}/{' + spSession + '}/device/';
+  $.get(url)
+
+    .done(function( data ) {
+      console.log('Sensaphone Zones');
+      console.log(data);
+
+      var spIsOnline = data.response.device[0].is_online;
+      var ldttm = document.getElementById("spldttm");
+      if (spIsOnline) {
+	    ldttm.innerHTML = 'Sensaphone Sentinel is online';
+	    shipOnlineSensaphone = true;
+	    ldttm.style.color = 'black';
+	  }
+	  else {
+	    ldttm.innerHTML = 'Sensaphone Sentinel is offline';
+	    ldttm.style.color = 'red';
+	  }
+
+      var spTpEx = parseFloat(data.response.device[0].zone[3].value);
+      if (!shipOnlineSensaphone || (spTpEx < -60) || (spTpEx > 60)) {
+        gaugeSpTpEx.value = 0;
+        gaugeSpTpEx.update({valueText: 'N/A'});
+
+      }
+      else {
+        gaugeSpTpEx.value = spTpEx;
+      }
+      //console.log('Temperature Exterior: ' + spTpEx);
+
+      var spTpTm = parseFloat(data.response.device[0].zone[4].value);
+      if (!shipOnlineSensaphone) {
+	    gaugeSpTpTm.value = 0;
+	    gaugeSpTpTm.update({valueText: 'N/A'});
+
+	  }
+      else {
+        gaugeSpTpTm.value = spTpTm;
+      }
+      //console.log('Temperature Telemetry: ' + spTpTm);
+
+      var spTpEr = parseFloat(data.response.device[0].zone[6].value);
+      if (!shipOnlineSensaphone) {
+	    gaugeSpTpEr.value = 0;
+	    gaugeSpTpEr.update({valueText: 'N/A'});
+
+	  }
+      else {
+        gaugeSpTpEr.value = spTpEr;
+      }
+      //console.log('Temperature Engine Room: ' + spTpEr);
+
+      var spTpSt = parseFloat(data.response.device[0].zone[9].value);
+      if (!shipOnlineSensaphone) {
+	    gaugeSpTpSt.value = 0;
+	    gaugeSpTpSt.update({valueText: 'N/A'});
+
+	  }
+      else {
+        gaugeSpTpSt.value = spTpSt;
+      }
+      //console.log('Temperature Shaft Tunnel: ' + spTpEr);
+
+      var spAC  = data.response.device[0].zone[5].value;
+      var imageAC = document.getElementById('ac');
+
+      if (!shipOnlineSensaphone) {
+        imageAC.src = "ac_q.png";
+      }
+      else if (spAC === 'On') {
+        imageAC.src = "ac_on.png";
+      }
+      else {
+        imageAC.src = "ac_off.png";
+      }
+
+      var spEngine  = data.response.device[0].zone[8].value;
+      var imageEngine = document.getElementById('engineicon');
+
+      if (!shipOnlineSensaphone) {
+        imageEngine.src = "engine_q.png";
+      }
+      else if (spEngine === 'Running') {
+        imageEngine.src = "engine_on_t.png";
+      }
+      else {
+        imageEngine.src = "engine_off_t.png";
+      }
+
+      var spGen    = data.response.device[0].zone[10].value;
+      var imageGen = document.getElementById('genicon');
+
+      if (!shipOnlineSensaphone) {
+        imageGen.src = "generator_q.jpg";
+      }
+      else if (spGen === 'Running') {
+        imageGen.src = "generator_on_t.png";
+      }
+      else {
+        imageGen.src = "generator_off_t.png";
+      }
+
+	  var spSplit  = data.response.device[0].zone[11].value;
+      var imageSplit = document.getElementById('split');
+
+      if (!shipOnlineSensaphone) {
+        imageSplit.src = "split_q.png";
+      }
+      else if (spSplit === 'On') {
+        imageSplit.src = "split_on_t.png";
+      }
+      else {
+        imageSplit.src = "split_off_t.png";
+      }
+
+      if (!shipOnlineSensaphone) {
+        gauge_aci.value = 0;
+	    gauge_aci.update({valueText: 'N/A'});
+        gauge_hc.value = 0;
+        gauge_hc.update({valueText: 'N/A'});
+        gauge_acv.value = 0;
+        gauge_acv.update({valueText: 'N/A'});
+        gauge_ha.value = 0;
+        gauge_genv.value = 0;
+		gauge_genv.update({valueText: 'N/A'});
+		gauge_engv.value = 0;
+		gauge_engv.update({valueText: 'N/A'});
+		gauge_geni.value = 0;
+		gauge_geni.update({valueText: 'N/A'});
+		gauge_engi.value = 0;
+		gauge_engi.update({valueText: 'N/A'});
+
+
+      }
+      else {
+
+   		var spACVStatus = data.response.device[0].zone[16].alarm_zone.current_status[0];
+   		console.log('AC Voltage Status: ' + spACVStatus);
+        var spACV = parseFloat(data.response.device[0].zone[16].value);
+	    if (spACV < 1) {
+	      spACV = 0;
+	    }
+	    spACV = spACV.toFixed(1);
+	    gauge_acv.value = spACV;
+	    gauge_acv.update({valueText: spACV+' V'});
+        //console.log('AC Voltage: ' + spACV);
+
+        var spACI1 = parseFloat(data.response.device[0].zone[15].value) / 1000;
+        var spACI2 = parseFloat(data.response.device[0].zone[18].value) / 1000;
+        var spACI = spACI1 + spACI2;
+        if (parseFloat(spACV) === 0) {
+          spACI = 0;
+        }
+        spACI = spACI.toFixed(1);
+        gauge_aci.value = spACI;
+        gauge_aci.update({valueText: spACI+' A'});
+        //console.log('AC Current L1: ' + spACI1);
+
+   		var spHouseStatus = data.response.device[0].zone[17].alarm_zone.current_status[0];
+   		if (spHouseStatus == 2) {
+   		  console.log('Main Bus Current Status: ' + spHouseStatus);
+          var spHouseI = parseFloat(data.response.device[0].zone[17].value);
+          spHouseI = Math.round((spHouseI) * 10) / 10;
+          spHouseI = spHouseI.toFixed(1);
+          gauge_hc.value = spHouseI;
+          gauge_hc.update({valueText: spHouseI+' A'});
+          //console.log('Main Bus Current: ' + spHouseI);
+        }
+        else {
+          gauge_hc.value = 0;
+		  gauge_hc.update({valueText: 'N/A'});
+		  console.log('Main Bus Current Status: ' + spHouseStatus);
+        }
+
+        var spEngV = parseFloat(data.response.device[0].zone[21].value);
+        spEngV = Math.round((spEngV) * 10) / 10;
+        spEngV = spEngV.toFixed(1);
+        gauge_engv.value = spEngV;
+        gauge_engv.update({valueText: spEngV+' V'});
+        console.log('Engine Battery Voltage: ' + spEngV);
+
+        var spGenV = parseFloat(data.response.device[0].zone[22].value);
+        spGenV = Math.round((spGenV) * 10) / 10;
+        spGenV = spGenV.toFixed(1);
+        gauge_genv.value = spGenV;
+        gauge_genv.update({valueText: spGenV+' V'});
+        console.log('Generator Battery Voltage: ' + spGenV);
+
+   		var spEngIStatus = data.response.device[0].zone[23].alarm_zone.current_status[0];
+   		if (spEngIStatus == 2) {
+          var spEngI = parseFloat(data.response.device[0].zone[23].value);
+          spEngI = Math.round((spEngI) * 10) / 10;
+          spEngI = spEngI.toFixed(1);
+          gauge_engi.value = spEngI;
+          gauge_engi.update({valueText: spEngI+' A'});
+          console.log('Engine Alternator Current: ' + spEngI);
+        }
+        else {
+          gauge_engi.value = 0;
+		  gauge_engi.update({valueText: 'N/A'});
+		  console.log('Engine Alternator Current Status: ' + spHouseStatus);
+        }
+
+   		var spGenIStatus = data.response.device[0].zone[24].alarm_zone.current_status[0];
+   		if (spGenIStatus == 2) {
+          var spGenI = parseFloat(data.response.device[0].zone[24].value);
+          spGenI = Math.round((spGenI) * 10) / 10;
+          spGenI = spGenI.toFixed(1);
+          gauge_geni.value = spGenI;
+          gauge_geni.update({valueText: spGenI+' A'});
+          console.log('Generator Alternator Current: ' + spGenI);
+        }
+        else {
+          gauge_geni.value = 0;
+		  gauge_geni.update({valueText: 'N/A'});
+		  console.log('Generator Alternator Current Status: ' + spHouseStatus);
+        }
+
+        var spEBV = parseFloat(data.response.device[0].zone[29].value);
+        spEBV = Math.round((spEBV) * 10) / 10;
+        spEBV = spEBV.toFixed(1);
+        gauge_ebv.value = spEBV;
+        gauge_ebv.update({valueText: spEBV+' V'});
+        console.log('Emergency Bus Voltage: ' + spEBV);
+
+        var spEBI = parseFloat(data.response.device[0].zone[28].value);
+        spEBI = Math.round((spEBI) * 10) / 10;
+        spEBI = spEBI.toFixed(1);
+        gauge_ebi.value = spEBI;
+        gauge_ebi.update({valueText: spEBI+' A'});
+        console.log('Emergency Bus Current: ' + spEBI);
+
+        var spSCI = parseFloat(data.response.device[0].zone[31].value);
+        spSCI = Math.round((spSCI) * 10) / 10 * -1;
+        spSCI = spSCI.toFixed(1);
+        gauge_spliti.value = spSCI;
+        gauge_spliti.update({valueText: spSCI+' A'});
+        console.log('Split Charge Current: ' + spSCI);
+
+        //var spHeelAngle = parseFloat(data.response.device[0].zone[22].value);
+        //console.log('Heel Angle: ' + spHeelAngle);
+        //gauge_ha.value = spHeelAngle;
+
+ 		//var tCan = document.getElementById("myCanvas")
+		//var tCtx = tCan.getContext("2d");
+ 		//tCan.width  = 275;
+		//tCan.height = 275;
+		//var gaugeCanvas = document.getElementById("gaugeHA");
+        //tCtx.drawImage(gaugeCanvas,0,50,275,225,0,0,275,225);
+
+      }
+
+    })
+
+    .fail(function(xhr, textStatus, error) {
+      console.log('Failed to get Sensaphone zones');
+      console.log(xhr.statusText);
+	  console.log(textStatus);
+      console.log(error);
+    });
+
+    setTimeout(spZone,SP_UPD_INT)
+}
+
+
+function parseInstall (data) {
+
+  var items = data.records.find(x => x.idSite === idSite);
+  //console.log(items);
+
+  var alarms = items.current_alarms;
+  var spr;
+
+  var lts = items.last_timestamp;  // Epoch in seconds
+  var now = Date.now();            // Epoch in milliseconds
+  var ago = timeDifference(now,lts * 1000);
+  var lttm = document.getElementById("vrmldttm")
+  //lttm.innerHTML = '<p>Last updated ' + ago + '<p></p>';
+  lttm.innerHTML = 'Victron last updated ' + ago;
+  if (((now / 1000) - lts) > STALE_TIME) {
+    lttm.style.color = 'red';
+    gauge_sp.update({valueText: 'N/A'});
+    gauge_sp.value = 0;
+    gauge_ha.value = 0;
+    shipOnlineVictron = false;
+  }
+  else {
+    lttm.style.color = 'black';
+    shipOnlineVictron = true;
+  }
+
+  if (!shipOnlineVictron) {
+    gauge_sp.update({valueText: 'N/A'});
+    gauge_sp.value = 0;
+    gauge_bv.value = 0;
+    gauge_bv.update({valueText: 'N/A'});
+    gauge_bc.value = 0;
+    gauge_bc.update({valueText: 'N/A'});
+    gauge_soc.value = 0;
+    gauge_soc.update({valueText: 'N/A',units: 'Unknown'});
+  }
+  else {
+    spr = items.extended.find(x => x.code === 'ls').rawValue;
+    spr = spr * metersPerSecondToKnots // Convert m/s to knots
+    //console.log('Speed: ' + spr + ' knots');
+    if (spr > SPEED_BASE) {
+       shipMoving = true;
+       speedCount = SPEED_COUNT_MAX;
+    }
+    else if (spr > SPEED_ERROR) {
+      if (speedCount !== SPEED_COUNT_MAX) {
+        speedCount++;
+      }
+    }
+    else {
+       if (speedCount !== 0) {
+  	      speedCount--;
+      }
+    }
+    if (speedCount === SPEED_COUNT_MAX) {
+      shipMoving = true;
+    }
+    else if (speedCount === 0) {
+      shipMoving = false;
+    }
+    if (!shipMoving) {
+       spr = 0;
+    }
+    gauge_sp.update({valueText: null});
+    gauge_sp.value = spr;
+
+    var bvr = items.extended.find(x => x.code === 'bv').rawValue;
+    gauge_bv.value = bvr;
+    bvr = Math.round((bvr) * 10) / 10;
+    bvr = bvr.toFixed(1);
+    gauge_bv.update({valueText: bvr + ' V'});
+
+    var bcr = items.extended.find(x => x.code === 'bc').rawValue;
+    gauge_bc.value = bcr;
+    bcr = Math.round((bcr) * 10) / 10;
+    bcr = bcr.toFixed(1);
+    gauge_bc.update({valueText: bcr + ' A'});
+
+    var soc   = Math.round(items.extended.find(x => x.code === 'bs').rawValue);
+    gauge_soc.value = soc;
+    var soc_status = 'Idle';
+    if (bcr > 0) {
+      soc_status = 'Charging';
+    }
+    else {
+      soc_status = 'Discharging';
+    }
+    gauge_soc.update({valueText: soc + ' %',units: soc_status});
+  }
+
+  var latitude  = items.extended.find(x => x.code === 'lt').rawValue;
+  var longitude = items.extended.find(x => x.code === 'lg').rawValue;
+  var myLatLng  = new google.maps.LatLng(latitude,longitude);
+
+  if (curr_lat !== 0) {
+    if (getDistanceFromLatLonInM(latitude,longitude,curr_lat,curr_lng) < GPS_ERROR) {
+      return;
+    }
+  }
+  else {
+    shipLocation = new google.maps.Marker({
+      icon: MAP_ICON,
+      title:"St. Lawrence II"
+    });
+  }
+
+  curr_lat = latitude;
+  curr_lng = longitude;
+
+  shipLocation.setPosition(myLatLng)
+  shipLocation.setMap(map);
+
+  if (noTrack) {
+      window.map.panTo(myLatLng);
+  }
+
+}
+
+function gaugeCreateTpEx () {
+  gaugeSpTpEx = gaugeCreateTp('gaugeSpTpEx','Exterior');
+}
+
+function gaugeCreateTpTm() {
+  gaugeSpTpTm = gaugeCreateTp('gaugeSpTpTm','Telemetry');
+}
+
+function gaugeCreateTpEr() {
+  gaugeSpTpEr = gaugeCreateTp('gaugeSpTpEr','Engine Room');
+}
+
+function gaugeCreateTpSt() {
+  gaugeSpTpSt = gaugeCreateTp('gaugeSpTpSt','Shaft Tunnel');
+}
+
+function gaugeCreateTp(render,title) {
+
+  var gauge = new RadialGauge({
+    renderTo: render,
+    width: 275,
+    height: 275,
+    units: "°C",
+    title: title,
+    valueInt: 1,
+    valueDec: 1,
+    minValue: -50,
+    maxValue: 50,
+    majorTicks: [
+
+        -50,
+        -40,
+        -30,
+        -20,
+        -10,
+        0,
+        10,
+        20,
+        30,
+        40,
+        50
+
+    ],
+    minorTicks: 2,
+    strokeTicks: true,
+    highlights: [
+        {
+            "from": -50,
+            "to": 0,
+            "color": "rgba(0,0, 255, .3)"
+        },
+        {
+            "from": 0,
+            "to": 50,
+            "color": "rgba(255, 0, 0, .3)"
+        }
+    ],
+    ticksAngle: 270,
+    startAngle: 45,
+    colorMajorTicks: "#ddd",
+    colorMinorTicks: "#ddd",
+    colorTitle: "#eee",
+    colorUnits: "#ccc",
+    colorNumbers: "#eee",
+    colorPlate: "#222",
+    borderShadowWidth: 0,
+    borders: true,
+    needleType: "arrow",
+    needleWidth: 2,
+    needleCircleSize: 7,
+    needleCircleOuter: true,
+    needleCircleInner: false,
+    animationDuration: 1500,
+    animationRule: "linear",
+    colorBorderOuter: "#333",
+    colorBorderOuterEnd: "#111",
+    colorBorderMiddle: "#222",
+    colorBorderMiddleEnd: "#111",
+    colorBorderInner: "#111",
+    colorBorderInnerEnd: "#333",
+    colorNeedleShadowDown: "#333",
+    colorNeedleCircleOuter: "#333",
+    colorNeedleCircleOuterEnd: "#111",
+    colorNeedleCircleInner: "#111",
+    colorNeedleCircleInnerEnd: "#222",
+    valueBoxBorderRadius: 0,
+    colorValueBoxRect: "#222",
+    colorValueBoxRectEnd: "#333"
+});
+gauge.draw();
+
+return(gauge);
+}
+
+function create_gauge_ha() {
+
+	   var ticks = [
+	   	  	        "45","30","15","0",
+	   	  	        "15","30","45"
+	   	  	];
+  gauge_ha = create_gauge_heel('gaugeHA','Heel Angle',-45,45,'Degrees',1,2,ticks,'',GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_bc() {
+
+	   var ticks = [
+	   	  	        "-120","-100","-80","-60","-40","-20", "0",
+	   	  	        "20","40","60","80","100","120"
+	   	  	];
+  gauge_bc = create_gauge('gaugeBC','Battery Current',-120,120,'Amperes',1,1,ticks,'',GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_sp() {
+
+	   var ticks = [
+	   	  	        "0","1","2","3","4","5","6",
+	   	  	        "7","8","9","10"
+	   	  	];
+  gauge_sp = create_gauge('gaugeSP','Speed',0,10,'Knots',1,1,ticks,'',GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_hc() {
+
+	   var ticks = [
+	   	  	        "0","2","4","6","8","10","12","14","16","18","20","22","24","26","28","30",
+	   	  	        "32","34","36","38","40"
+	   	  	];
+  gauge_hc = create_gauge('gaugeHC','Main Bus Current',0,40,'Amperes',1,1,ticks,'',GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_ebi() {
+  var highlights = [
+	        {
+			    "from": 18,
+			    "to": 20,
+			    "color": "rgba(200, 50, 50, .75)"
+	        }
+	   ];
+
+	   var ticks = [
+	   	  	        "0","2","4","6","8","10","12","14","16","18","20"
+	   	  	];
+  gauge_ebi = create_gauge('gaugeEBI','Emerg Bus Current',0,20,'Amperes',1,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_bv() {
+  var highlights = [
+	        {
+	            "from": 8,
+	            "to": 11,
+	            "color": "rgba(200, 50, 50, .75)"
+	        },
+	        {
+			    "from": 15,
+			    "to": 16,
+			    "color": "rgba(200, 50, 50, .75)"
+	        }
+	   ];
+	   var ticks = [
+	   	  	        "8","9","10","11","12","13","14","15","16"
+	    ];
+  gauge_bv   = create_gauge('gaugeBV','Voltage',8,16,'Volts',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+  gauge_ebv  = create_gauge('gaugeEBV','Voltage',8,16,'Volts',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+  gauge_genv = create_gauge('gaugeGenV','Battery Voltage',8,16,'Volts',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+  gauge_engv = create_gauge('gaugeEngV','Battery Voltage',8,16,'Volts',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+
+}
+
+function create_gauge_alti() {
+  var highlights = [];
+
+	   var ticks = [
+	   	  	        "0","5","10","15","20","25","30","35","40","45","50","55","60"
+	    ];
+  gauge_geni = create_gauge('gaugeGenI','Alternator Current',0,60,'Amps',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+  gauge_engi = create_gauge('gaugeEngI','Alternator Current',0,60,'Amps',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+  gauge_spliti = create_gauge('gaugeSplitI','Split Charge Current',0,60,'Amps',2,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+
+}
+
+
+function create_gauge_aci() {
+  var highlights = [
+  	        {
+  	            "from": 24,
+  	            "to": 30,
+  	            "color": "rgba(255, 150, 50, .75)"
+  	        }
+	  ];
+	   var ticks = [
+	   	  	        "0","2","4","6","8","10","12","14","16","18","20","22","24","26","28","30"
+	    ];
+  gauge_aci = create_gauge('gaugeACI','AC Current',0,30,'Amperes',1,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_acv() {
+  var highlights = [
+  	        {
+  	            "from": 100,
+  	            "to": 105,
+  	            "color": "rgba(200, 50, 50, .75)"
+  	        },
+  	        {
+			    "from": 125,
+		        "to": 130,
+		        "color": "rgba(200, 50, 50, .75)"
+  	        }
+	  ];
+	   var ticks = [
+	   	  	        "100","105","110","115","120","125","130"
+	    ];
+  gauge_acv = create_gauge('gaugeACV','AC Voltage',100,130,'Volts',1,1,ticks,highlights,GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge_soc() {
+  var highlights = [
+	        {
+	            "from": 0,
+	            "to": 60,
+	            "color": "rgba(200, 50, 50, .75)"
+	        }
+	  ];
+  var ticks = [
+	  	        "10","20","10","30","40","50","60","70","80","90","100"
+	    ];
+  gauge_soc = create_gauge('gaugeSOC','State of Charge',0,100,'TBD',1,0,ticks,highlights,GAUGE_SIZE_MAJOR);
+}
+
+function create_gauge(gauge_canvas,title,min,max,units,valueint,valuedec,ticks,highlights,size) {
+  var gauge = new RadialGauge({
+  	    renderTo: gauge_canvas,
+  	    title: title,
+	    width: size,
+	    height: size,
+	    ticksAngle: 270,
+	    startAngle: 45,
+	    units: units,
+	    minValue: min,
+	    maxValue: max,
+	    majorTicks: ticks,
+	    minorTicks: 2,
+	    strokeTicks: true,
+	    highlights: highlights,
+	    colorPlate: "#fff",
+	    borderShadowWidth: 0,
+	    borders: false,
+	    needleType: "arrow",
+	    needleWidth: 2,
+	    needleCircleSize: 7,
+	    needleCircleOuter: true,
+	    needleCircleInner: false,
+	    animationDuration: 1500,
+	    animationRule: "linear",
+	    valueInt: valueint,
+	    valueDec: valuedec,
+	    valueText: "N/A"
+  });
+  gauge.draw();
+  return(gauge);
+}
+
+function create_gauge_heel(gauge_canvas,title,min,max,units,valueint,valuedec,ticks,highlights,size) {
+  var gauge = new RadialGauge({
+  	    renderTo: gauge_canvas,
+  	    title: title,
+	    width: 275,
+	    height: 275,
+	    ticksAngle: 90,
+	    startAngle: 315,
+	    units: units,
+	    minValue: min,
+	    maxValue: max,
+	    majorTicks: ticks,
+	    minorTicks: 3,
+	    strokeTicks: true,
+	    colorPlate: "#fff",
+	    borderShadowWidth: 0,
+	    borders: false,
+	    needleType: "arrow",
+	    needleWidth: 2,
+	    needleCircleSize: 7,
+	    needleCircleOuter: true,
+	    needleCircleInner: false,
+	    animationDuration: 1500,
+	    animationRule: "linear",
+	    valueBox: false,
+	    valueInt: valueint,
+	    valueDec: valuedec,
+	    valueText: "N/A",
+	        highlights: [
+
+		        {
+		            "from": -45,
+		            "to": -30,
+		            "color": "rgba(255, 150, 50, .75)"
+		        },
+		        {
+					    "from": 30,
+					    "to": 45,
+					    "color": "rgba(255, 150, 50, .75)"
+		        }
+		    ]
+  });
+  gauge.draw();
+  return(gauge);
+}
+
+function initMap() {
+
+  map = new google.maps.Map(document.getElementById('shipMap'), {
+    zoom: ZOOM_DEFAULT,
+    mapTypeId: 'satellite',
+    mapTypeControlOptions: {
+	     mapTypeIds: ['roadmap', 'satellite']
+	  },
+    streetViewControl: false,
+    mapTypeControl: true,
+    center: LOCATION_POH
+  });
+
+  google.maps.event.addListener(map, 'zoom_changed', function(){
+    if (systemZoomed) {
+      systemZoomed = false;
+      return;
+    }
+    userZoomed = true;
+  });
+
+   google.maps.event.addListener(map, 'idle', function(){
+     document.getElementById('mapState').innerHTML = '';
+   });
+
+}
+
+function timeDifference(current, previous) {
+
+    var msPerMinute = 60 * 1000;
+    var msPerHour = msPerMinute * 60;
+    var msPerDay = msPerHour * 24;
+    var msPerMonth = msPerDay * 30;
+    var msPerYear = msPerDay * 365;
+
+    var elapsed = current - previous;
+
+    if (elapsed < msPerMinute) {
+         //return Math.round(elapsed/1000) + ' seconds ago';
+         return('a few seconds ago');
+    }
+
+    else if (elapsed < msPerHour) {
+         var mins = Math.round(elapsed/msPerMinute);
+         if (mins === 1) {
+           return('a minute ago');
+         }
+         else {
+           return(mins + ' minutes ago');
+         }
+    }
+
+    else if (elapsed < msPerDay ) {
+      var hours = Math.round(elapsed/msPerHour);
+      console.log ('hours'+hours);
+         if (hours === 1) {
+           return '1 hour ago';
+         }
+         else {
+           return hours + ' hours ago';
+         }
+    }
+
+    else if (elapsed < msPerMonth) {
+        return 'approximately ' + Math.round(elapsed/msPerDay) + ' days ago';
+    }
+
+    else if (elapsed < msPerYear) {
+        return 'approximately ' + Math.round(elapsed/msPerMonth) + ' months ago';
+    }
+
+    else {
+        return 'approximately ' + Math.round(elapsed/msPerYear ) + ' years ago';
+    }
+}
+
+</script>
+</head>
+<body>
+<div id='header'>
+  <div id='title'>
+    <h1><a href="https://tallshipexpeditions.com" target=_blank>St. Lawrence II</a></h1>
+    <div id="vrmldttm">Victron last updated: Never</div>
+    <div id="spldttm">Sensaphone last updated: Never</div>
+    <div id="alarm"></div>
+  </div>
+  <div id='logo'><img src=ship.jpg width=120px height=120px></div>
+</div>
+
+<hr id='headerline'>
+
+<h2>Main DC System</h2>
+<div id=dcelectrical height=275>
+  <canvas id="gaugeSOC" width=275 height=275></canvas>
+  <canvas id="gaugeBV" width=275 height=275></canvas>
+  <canvas id="gaugeBC" width=275 height=275></canvas>
+  <canvas id="gaugeHC" width=275 height=275></canvas>
+</div>
+
+<h2>Emergency DC System</h2>
+<div id=dcelectrical height=275>
+  <canvas id="gaugeEBV" width=275 height=275></canvas>
+  <canvas id="gaugeEBI" width=275 height=275></canvas>
+</div>
+
+
+<h2>AC System</h2>
+<div id=acelectrical height=275>
+  <img id=ac src=ac_q.png width=275 height=275 display=block>
+  <canvas id="gaugeACI" width=275 height=275></canvas>
+  <canvas id="gaugeACV" width=275 height=275></canvas>
+</div>
+
+<h2>Velocity</h2>
+<div id=velocity>
+  <canvas id="gaugeSP" width=275 height=275></canvas>
+  <!--<canvas id="gaugeHA" width=275 height=275></canvas>-->
+</div>
+
+<h2>Ship Track</h2>
+
+<label for="days">Days of History:</label>
+<select name="days" id="daysHist" class="daysHistClass" onchange="changeTrackHist(this.value)">
+  <option value="1" selected>24 Hours</option>
+  <option value="2">2 Days</option>
+  <option value="3">3 Days</option>
+  <option value="4">4 Days</option>
+  <option value="5">5 Days</option>
+  <option value="6">6 Days</option>
+  <option value="7">7 Days</option>
+  <option value="14">14 Days</option>
+  <option value="30">30 Days</option>
+  <option value="120">120 Days</option>
+</select>
+<span id=mapState></span>
+
+<div id="shipMap"></div>
+
+<h2>Main Engine</h2>
+<div id=engine height=275>
+  <img id=engineicon src=engine_q.png width=265 height=265 display=block>
+  <canvas id="gaugeEngV" width=275 height=275></canvas>
+  <canvas id="gaugeEngI" width=275 height=275></canvas>
+  <img id=split src=split_q.png width=265 height=265 display=block>
+  <canvas id="gaugeSplitI" width=275 height=275></canvas>
+</div>
+
+<h2>Generator</h2>
+<div id=engine height=275>
+  <img id=genicon src=generator_q.jpg width=265 height=265 display=block>
+  <canvas id="gaugeGenV" width=275 height=275></canvas>
+  <canvas id="gaugeGenI" width=275 height=275></canvas>
+</div>
+
+
+<h2>Current Temperatures</h2>
+<div id=temperature>
+  <canvas id="gaugeSpTpEx"></canvas>
+  <canvas id="gaugeSpTpTm"></canvas>
+  <canvas id="gaugeSpTpEr"></canvas>
+  <canvas id="gaugeSpTpSt"></canvas>
+</div>
+
+<div id='powered'>
+  <a href="https://www.sensaphone.com/" target=_blank>Powered by Sensaphone</a><br>
+  <a href="https://www.victronenergy.com/" target=_blank>Powered by Victron Energy</a>
+</div>
+
+</body>
+</html>
